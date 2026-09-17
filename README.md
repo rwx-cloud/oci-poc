@@ -144,3 +144,39 @@ rwx sandbox exec -- python script/oci_sweep.py --all-runs
 
 The VCN and subnet are intentionally left in place; they cost nothing and
 keeping them means the benchmark never pays for network setup.
+
+## Object Storage throughput
+
+Run an end-to-end network/storage benchmark from a temporary E5 VM:
+
+```sh
+rwx sandbox exec -- python script/oci_network.py
+rwx sandbox exec -- python script/oci_transfer_benchmark.py
+```
+
+Defaults: 2 OCPUs (4 vCPUs), 8 GB RAM, eight 1 GiB objects in a temporary
+same-region Standard Object Storage bucket, three repetitions each with one
+and eight concurrent transfers. Upload and download phases run separately.
+Use `--ocpus`, `--memory-gb`, `--concurrency`, or `--repetitions` to vary the
+test. `--size-mib 1 --files 2 --repetitions 1` is a small smoke test.
+
+The guest uses curl over HTTPS to the public regional endpoint through the
+existing internet gateway. Uploads read one random, incompressible RAM-backed
+file into eight distinct objects; downloads discard data to `/dev/null`.
+This excludes disk throughput and data generation from timing. Aggregate
+throughput is total successful payload bytes divided by phase wall time,
+including connection setup. Each transfer must return HTTP 2xx and the expected
+byte count; final stored objects must match the source size and Content-MD5.
+This does not hash downloaded bodies or measure durable local file writes.
+
+`transfer-benchmark.json` records individual timings, aggregate Gbps and MiB/s,
+and the VM's network bandwidth allocation reported by OCI. This measures the
+HTTPS/Object Storage path, not raw NIC capacity or simultaneous full-duplex
+throughput. Repeated downloads may benefit from service-side caching.
+
+The VM receives only a two-hour bucket-scoped preauthenticated URL over SSH,
+never tenancy credentials. The benchmark terminates the VM and deletes its
+boot volume, temporary objects, bucket, and preauthenticated request in cleanup,
+including on ordinary errors and SIGINT/SIGTERM. A hard-killed sandbox can
+leave resources behind: instances carry the existing POC tags for sweeping,
+and temporary buckets have unique `rwx-transfer-` names and POC tags.
