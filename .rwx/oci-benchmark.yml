@@ -1,0 +1,154 @@
+# Benchmark how long OCI takes to boot and terminate a 2 CPU / 8 GB VM.
+#
+#   rwx run .rwx/oci-benchmark.yml --wait
+#   rwx run .rwx/oci-benchmark.yml --wait --init iterations=5 --init shape=VM.Standard.A1.Flex
+
+on:
+  cli:
+    init:
+      commit-sha: ${{ event.git.sha }}
+      iterations: '3'
+      shape: VM.Standard.E5.Flex
+      ocpus: '2'
+      memory-gb: '8'
+      operating-system: Oracle Linux
+      operating-system-version: '9'
+      ssh-user: opc
+  dispatch:
+    key: oci-vm-boot-benchmark
+    params:
+      - key: iterations
+        name: Iterations
+        default: '3'
+      - key: shape
+        name: Compute shape
+        default: VM.Standard.E5.Flex
+      - key: ocpus
+        name: OCPUs
+        default: '2'
+      - key: memory-gb
+        name: Memory (GB)
+        default: '8'
+    init:
+      commit-sha: ${{ event.git.sha }}
+      iterations: ${{ event.dispatch.params.iterations }}
+      shape: ${{ event.dispatch.params.shape }}
+      ocpus: ${{ event.dispatch.params.ocpus }}
+      memory-gb: ${{ event.dispatch.params.memory-gb }}
+      operating-system: Oracle Linux
+      operating-system-version: '9'
+      ssh-user: opc
+
+base:
+  image: ubuntu:24.04
+  config: rwx/base 1.2.0
+
+tasks:
+  - key: code
+    call: git/clone 2.1.0
+    with:
+      repository: https://github.com/rwx-cloud/oci-poc.git
+      ref: ${{ init.commit-sha }}
+      github-token: ${{ github['rwx-cloud'].token }}
+
+  - key: python
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y python3-venv
+      sudo apt-get clean
+      python3 --version
+
+  - key: oci-sdk
+    use: python
+    run: |
+      python3 -m venv "$PWD/.oci-venv"
+      "$PWD/.oci-venv/bin/pip" install --quiet --upgrade pip
+      "$PWD/.oci-venv/bin/pip" install --quiet 'oci-cli==3.68.0'
+      echo "$PWD/.oci-venv/bin" > "$RWX_ENV/PATH"
+      "$PWD/.oci-venv/bin/oci" --version
+
+  # Idempotent: creates the VCN, public subnet, internet gateway, route table and
+  # security list on the first run, then just reads them back. Not cached, so a
+  # network torn down out of band is rebuilt rather than assumed.
+  - key: network
+    use: [code, oci-sdk]
+    cache: false
+    run: |
+      umask 077
+      mkdir -p "$HOME/.oci"
+      printf '%s' "$OCI_PRIVATE_KEY" > "$HOME/.oci/key.pem"
+      export OCI_CLI_KEY_FILE="$HOME/.oci/key.pem"
+      python script/oci_network.py
+      cat network.json
+    env:
+      OCI_CLI_AUTH: api_key
+      OCI_CLI_USER: ${{ vaults.oci-poc.vars.user }}
+      OCI_CLI_TENANCY: ${{ vaults.oci-poc.vars.tenancy }}
+      OCI_CLI_FINGERPRINT: ${{ vaults.oci-poc.vars.fingerprint }}
+      OCI_CLI_REGION: ${{ vaults.oci-poc.vars.region }}
+      OCI_PRIVATE_KEY:
+        value: ${{ vaults.oci-poc.secrets.private-key }}
+        cache-key: excluded
+
+  - key: benchmark
+    use: [code, oci-sdk, network]
+    cache: false
+    timeout: 45m
+    run: |
+      umask 077
+      mkdir -p "$HOME/.oci" "$HOME/.ssh"
+      printf '%s' "$OCI_PRIVATE_KEY" > "$HOME/.oci/key.pem"
+      export OCI_CLI_KEY_FILE="$HOME/.oci/key.pem"
+
+      # Ephemeral keypair, used only to confirm the guest is really usable.
+      ssh-keygen -t ed25519 -N '' -C rwx-oci-poc -f "$HOME/.ssh/rwx_oci_poc" >/dev/null
+
+      python script/oci_benchmark.py \
+        --iterations "$ITERATIONS" \
+        --shape "$SHAPE" \
+        --ocpus "$OCPUS" \
+        --memory-gb "$MEMORY_GB" \
+        --operating-system "$OPERATING_SYSTEM" \
+        --operating-system-version "$OPERATING_SYSTEM_VERSION" \
+        --ssh-user "$SSH_USER" \
+        --ssh-key "$HOME/.ssh/rwx_oci_poc" \
+        --guest-report \
+        --output "$RWX_ARTIFACTS/benchmark.json"
+    env:
+      ITERATIONS: ${{ init.iterations }}
+      SHAPE: ${{ init.shape }}
+      OCPUS: ${{ init.ocpus }}
+      MEMORY_GB: ${{ init.memory-gb }}
+      OPERATING_SYSTEM: ${{ init.operating-system }}
+      OPERATING_SYSTEM_VERSION: ${{ init.operating-system-version }}
+      SSH_USER: ${{ init.ssh-user }}
+      OCI_CLI_AUTH: api_key
+      OCI_CLI_USER: ${{ vaults.oci-poc.vars.user }}
+      OCI_CLI_TENANCY: ${{ vaults.oci-poc.vars.tenancy }}
+      OCI_CLI_FINGERPRINT: ${{ vaults.oci-poc.vars.fingerprint }}
+      OCI_CLI_REGION: ${{ vaults.oci-poc.vars.region }}
+      OCI_PRIVATE_KEY:
+        value: ${{ vaults.oci-poc.secrets.private-key }}
+        cache-key: excluded
+
+  # The benchmark terminates its own instances, including on failure. This is the
+  # backstop for a task that is killed outright (timeout, cancellation).
+  - key: sweep
+    use: [code, oci-sdk]
+    after: ${{ benchmark.succeeded || benchmark.failed || benchmark.aborted }}
+    cache: false
+    run: |
+      umask 077
+      mkdir -p "$HOME/.oci"
+      printf '%s' "$OCI_PRIVATE_KEY" > "$HOME/.oci/key.pem"
+      export OCI_CLI_KEY_FILE="$HOME/.oci/key.pem"
+      python script/oci_sweep.py
+    env:
+      OCI_CLI_AUTH: api_key
+      OCI_CLI_USER: ${{ vaults.oci-poc.vars.user }}
+      OCI_CLI_TENANCY: ${{ vaults.oci-poc.vars.tenancy }}
+      OCI_CLI_FINGERPRINT: ${{ vaults.oci-poc.vars.fingerprint }}
+      OCI_CLI_REGION: ${{ vaults.oci-poc.vars.region }}
+      OCI_PRIVATE_KEY:
+        value: ${{ vaults.oci-poc.secrets.private-key }}
+        cache-key: excluded
