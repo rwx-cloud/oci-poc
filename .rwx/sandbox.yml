@@ -29,14 +29,17 @@ tasks:
       sudo apt-get clean
       python3 --version
 
+  # Installed outside the workspace on purpose: `rwx sandbox exec` syncs the
+  # workspace both ways, and a venv sitting in it gets clobbered by the sync.
   - key: oci-sdk
     use: python
     run: |
-      python3 -m venv "$PWD/.oci-venv"
-      "$PWD/.oci-venv/bin/pip" install --quiet --upgrade pip
-      "$PWD/.oci-venv/bin/pip" install --quiet 'oci-cli==3.68.0'
-      echo "$PWD/.oci-venv/bin" > "$RWX_ENV/PATH"
-      "$PWD/.oci-venv/bin/oci" --version
+      sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/oci-venv
+      python3 -m venv /opt/oci-venv
+      /opt/oci-venv/bin/pip install --quiet --upgrade pip
+      /opt/oci-venv/bin/pip install --quiet 'oci-cli==3.68.0'
+      echo /opt/oci-venv/bin > "$RWX_ENV/PATH"
+      /opt/oci-venv/bin/oci --version
 
   - key: sandbox
     use: [code, oci-sdk]
