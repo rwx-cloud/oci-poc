@@ -451,7 +451,20 @@ def main():
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
 
-    domains = network_info["availability_domains"]
+    domains = []
+    for domain in network_info["availability_domains"]:
+        shapes = oci.pagination.list_call_get_all_results(
+            c["compute"].list_shapes,
+            network_info["compartment_id"],
+            availability_domain=domain,
+        ).data
+        if any(shape.shape == args.shape for shape in shapes):
+            domains.append(domain)
+        else:
+            log(f"skipping {domain}: {args.shape} is not available")
+    if not domains:
+        die(f"no availability domains support {args.shape}")
+
     results = []
     try:
         for i in range(1, args.iterations + 1):
