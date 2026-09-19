@@ -180,3 +180,41 @@ boot volume, temporary objects, bucket, and preauthenticated request in cleanup,
 including on ordinary errors and SIGINT/SIGTERM. A hard-killed sandbox can
 leave resources behind: instances carry the existing POC tags for sweeping,
 and temporary buckets have unique `rwx-transfer-` names and POC tags.
+
+## Block-volume provisioning and hot attachment
+
+```sh
+rwx sandbox exec -- python script/oci_network.py
+rwx sandbox exec -- python script/oci_volume_benchmark.py --iterations 3
+```
+
+The benchmark boots one temporary `VM.Standard.E6.Ax.Flex` VM (2 OCPUs,
+8 GB RAM), waits for SSH and cloud-init, then creates three fresh 50 GiB
+Balanced volumes (10 VPUs/GB). Each volume is attached using paravirtualization
+and an explicitly selected available device name. VM startup and device-name
+selection are outside the timer. Volumes are detached and deleted between trials.
+
+Measured September 19, 2026 in `us-ashburn-1`, `nivC:US-ASHBURN-AD-1`, with
+`Oracle-Linux-9.8-2026.08.14-0`:
+
+| Trial | Create → AVAILABLE | Attach request → ATTACHED | Create → guest read completed |
+| --- | ---: | ---: | ---: |
+| 1 | 7.223 s | 12.223 s | 19.861 s |
+| 2 | 6.645 s | 11.399 s | 18.409 s |
+| 3 | 8.024 s | 12.088 s | 20.526 s |
+| **Median** | **7.223 s** | **12.088 s** | **19.861 s** |
+
+The guest check reads 4 KiB from the new block device with direct I/O after
+OCI reports `ATTACHED`; its timestamp includes SSH connection and command
+overhead. These are observed upper bounds, not exact guest device-arrival
+times. Lifecycle polling sleeps 0.5 s between API calls, whose latency adds to
+the observation delay. No filesystem is created or mounted, and write readiness
+and throughput are not measured. Three sequential volumes on one VM in one AD
+do not establish tail latency or cross-region performance.
+
+`volume-benchmark.json` records API-return offsets, per-trial timings, resource
+IDs, and cleanup status. An initial diagnostic attachment returned no device
+path and was cleaned up; it is excluded from the three complete trials above.
+Ordinary completion, errors, and SIGINT/SIGTERM trigger cleanup. A hard kill or
+cleanup API failure can leave tagged resources behind; the existing instance
+sweeper does not delete data volumes, which need separate inspection and cleanup.
