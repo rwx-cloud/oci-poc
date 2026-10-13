@@ -11,7 +11,7 @@ import time
 from types import SimpleNamespace
 
 from oci_benchmark import (
-    Clock, SshProbe, latest_image, launch, public_ip, tcp_open,
+    Clock, SshProbe, kernel_boot_report, latest_image, launch, public_ip, tcp_open,
     terminate, wait_for_state,
 )
 from oci_common import clients, compartment_id, log, read_json, write_json
@@ -93,6 +93,7 @@ def main():
                 clock.mark("command_completed")
                 row = {"marks": clock.marks, "boot_id": result.stdout.strip(),
                        "ssh_probe_window": probe.probe_window}
+                row["kernel"] = kernel_boot_report(ip, "opc", key, clock)
                 # Finish first-boot initialization before stopping, outside timing.
                 # A degraded systemd state is terminal too; retain diagnostics.
                 settled = subprocess.run(ssh + ["sudo cloud-init status --wait; "

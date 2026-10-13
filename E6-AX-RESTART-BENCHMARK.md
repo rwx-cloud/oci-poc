@@ -1,5 +1,50 @@
 # E6 AX start from stopped
 
+## October 13, 2026: five independent second boots
+
+**Second-boot kernel start had a median interval of 9.666–10.011 seconds
+from `START`; SSH answered at a median 16.860 seconds.** Each trial used a
+different newly allocated VM, fully booted once, gracefully stopped, then
+started exactly once. These are five second boots, not five cycles on one VM.
+
+All five used `VM.Standard.E6.Ax.Flex`, 2 OCPUs / 8 GB RAM, 50 GB boot volumes,
+Ashburn AD-1, and `Oracle-Linux-9.8-2026.09.18-0`. They ran sequentially via
+`rwx sandbox exec` from 23:27 to 23:46 UTC. Kernel intervals use five bracketed
+uptime reads as described in [the kernel-start methodology](README.md#kernel-start-versus-ssh-readiness).
+SSH is the retrieval channel, not the kernel timing endpoint.
+
+| Trial | Fresh-launch kernel start | Second-boot kernel start | Second-boot observed RUNNING | Second-boot SSH |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 38.282–38.584 s | 9.731–10.011 s | 5.290 s | 16.984 s |
+| 2 | 36.124–36.482 s | 7.697–8.089 s | 2.776 s | 14.780 s |
+| 3 | 31.744–32.033 s | 7.596–7.881 s | 2.876 s | 14.741 s |
+| 4 | 34.462–34.859 s | 10.219–10.609 s | 5.296 s | 17.668 s |
+| 5 | 29.997–30.365 s | 9.666–10.052 s | 5.059 s | 16.860 s |
+
+Fresh-launch times start at `LaunchInstance`; second-boot times start just
+before the probe thread and `START` request. Stop time is excluded. The paired
+fresh-launch medians were 34.462–34.859 s to kernel start and 44.611 s to SSH.
+On second boot, the kernel logged its `/init` handoff after 0.859–0.900 s;
+this remains a stock-initramfs baseline, not a custom lightweight-init test.
+OCI `RUNNING` again preceded the inferred kernel origin in every trial.
+
+Validation confirmed five distinct instance OCIDs, changed boot IDs, `STOPPED`
+before each `START`, and all five instances `TERMINATED` afterward with boot-volume
+deletion requested. The final sweep found zero leftovers. Cloud-init reported
+`done`; systemd completed startup but reported `degraded`, as in the older test
+below. This does not certify overall guest health. Graceful stops took
+38.668–122.536 s (median 97.881 s), so these results apply to **already stopped**
+instances, not the whole stop/start cycle. Long-idle starts and tail latency
+were not measured.
+
+Reproduce with five sequential invocations of `script/oci_restart_benchmark.py
+--iterations 1`, each with a separate `--output`, using the RWX/network setup
+below. The script now records kernel samples and raw dmesg on both boots.
+The five raw JSON files, including instance IDs, are in `second-boot-raw-results.zip`
+in the [measurement thread](https://ampcode.com/threads/T-01a13742-e07b-7161-b8ef-73cdf253b968).
+
+## September 19, 2026: historical single-VM test
+
 **Starting a previously booted, stopped E6 AX VM reached SSH in a median
 17.115 seconds; an authenticated command completed at 19.644 seconds.**
 This is substantially faster than the earlier fresh-launch median of 42.605 s,
