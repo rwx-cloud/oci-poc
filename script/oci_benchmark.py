@@ -215,6 +215,51 @@ def terminate(compute, instance_id):
             raise
 
 
+def kernel_boot_report(host, user, key_path, clock):
+    """Infer boot-clock zero from later uptime reads, without guest wall time.
+
+    Each read happens inside its SSH request/response bracket. /proc/uptime
+    truncates to centiseconds. Intersect five brackets to limit transport error;
+    this estimates the kernel's boot clock, not its first executed instruction.
+    """
+    command = [
+        "ssh", "-i", key_path, "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
+        "-o", "LogLevel=ERROR", "-o", "BatchMode=yes", f"{user}@{host}",
+    ]
+    samples = []
+    for attempt in range(10):
+        started = time.monotonic() - clock.t0
+        response = subprocess.run(command + ["cat /proc/uptime"],
+                                  capture_output=True, text=True, timeout=30)
+        finished = time.monotonic() - clock.t0
+        if response.returncode != 0:
+            time.sleep(1)
+            continue
+        uptime = float(response.stdout.split()[0])
+        samples.append({
+            "request_start": started, "response_end": finished, "uptime": uptime,
+            "boot_lower": started - uptime - 0.01,
+            "boot_upper": finished - uptime,
+        })
+        if len(samples) == 5:
+            break
+    if len(samples) != 5:
+        raise RuntimeError("could not collect five kernel uptime samples")
+    lower = max(sample["boot_lower"] for sample in samples)
+    upper = min(sample["boot_upper"] for sample in samples)
+    if lower > upper:
+        raise RuntimeError("inconsistent boot-clock bounds; guest clock changed?")
+    # Keep raw monotonic kernel logs for early userspace markers and clock
+    # diagnostics. Do not use dmesg -T (wall-clock conversion).
+    response = subprocess.run(command + ["sudo -n dmesg --color=never"],
+                              capture_output=True, text=True, timeout=30)
+    response.check_returncode()
+    log(f"  kernel boot-clock origin: +{lower:.3f}..{upper:.3f}s")
+    return {"boot_lower": lower, "boot_upper": upper,
+            "samples": samples, "dmesg": response.stdout}
+
+
 def wait_for_state(compute, instance_id, target, timeout):
     deadline = time.monotonic() + timeout
     last = None
@@ -251,14 +296,22 @@ def run_iteration(args, network_info, c, image, availability_domain, public_key)
         probe = None
         deadline = time.monotonic() + args.boot_timeout
         state_seen = False
+        last_nonrunning_start = None
         while time.monotonic() < deadline:
             if not state_seen:
+                state_request_start = time.monotonic() - clock.t0
                 state = compute.get_instance(instance_id).data.lifecycle_state
                 if state == "RUNNING":
                     clock.mark("state_running")
+                    result["running_observation_window"] = {
+                        "last_nonrunning_request_start": last_nonrunning_start,
+                        "first_running_response_end": time.monotonic() - clock.t0,
+                    }
                     state_seen = True
                 elif state in ("TERMINATING", "TERMINATED"):
                     die(f"instance reached {state} while waiting for RUNNING")
+                else:
+                    last_nonrunning_start = state_request_start
             if ip is None:
                 ip = public_ip(compute, network, compartment, instance_id)
                 if ip:
@@ -290,6 +343,9 @@ def run_iteration(args, network_info, c, image, availability_domain, public_key)
             result["guest"] = guest_boot_report(ip, args.ssh_user, args.ssh_key)
             for line in result["guest"].splitlines():
                 log(f"  guest: {line}")
+
+        if args.kernel_report:
+            result["kernel"] = kernel_boot_report(ip, args.ssh_user, args.ssh_key, clock)
 
         terminate_started = time.monotonic()
         terminate(compute, instance_id)
@@ -420,6 +476,8 @@ def main():
     parser.add_argument("--ssh-user", default="opc")
     parser.add_argument("--ssh-key", default=os.path.expanduser("~/.ssh/rwx_oci_poc"))
     parser.add_argument("--guest-report", action="store_true")
+    parser.add_argument("--kernel-report", action="store_true",
+                        help="infer kernel boot-clock origin and retain raw dmesg")
     parser.add_argument("--network-file", default="network.json")
     parser.add_argument("--output", default="benchmark.json")
     args = parser.parse_args()

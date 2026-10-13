@@ -119,6 +119,58 @@ with exponential backoff and restarts its clock on the attempt that succeeds, so
 a throttled launch costs wall time but does not corrupt the measurement. Running
 the configurations sequentially is still the better idea.
 
+### Kernel start versus SSH readiness
+
+Add `--kernel-report` to `script/oci_benchmark.py` to infer the guest's kernel
+boot-clock origin independently of how long SSH or systemd takes to start.
+SSH is only the later retrieval channel: five `/proc/uptime` reads are each
+bracketed by the runner's monotonic request-start and response-end times.
+For uptime `u`, the origin lies between `request_start - u - 0.01` and
+`response_end - u`; the extra 0.01 seconds accounts for uptime truncation.
+The report intersects those five intervals and retains all samples and raw
+`dmesg` output. No guest wall-clock synchronization is required.
+
+Measured October 13, 2026, through `rwx sandbox exec`, with three fresh
+`VM.Standard.E6.Ax.Flex` instances in Ashburn, 2 OCPUs, 8 GB RAM, 50 GB boot
+volumes, and `Oracle-Linux-9.8-2026.09.18-0` (UEK 6.12):
+
+| Trial / AD | Observed RUNNING | Inferred kernel origin | SSH banner | Kernel → `/init` handoff |
+| --- | ---: | ---: | ---: | ---: |
+| 1 / AD-1 | 27.430 s | 29.629–30.025 s | 39.844 s | 0.876 s |
+| 2 / AD-3 | 34.949 s | 36.678–36.975 s | 46.745 s | 0.872 s |
+| 3 / AD-1 | 66.798 s | 69.943–70.341 s | 80.156 s | 0.899 s |
+
+The first three timing columns are offsets from the successful launch request.
+**`RUNNING` preceded the kernel boot-clock origin in every trial, by
+1.729–3.543 seconds across the intervals.** This difference exceeds the
+0.296–0.398 s kernel-origin interval widths. The API polling windows were
+1.253–1.308 s wide; polling delay cannot explain observing `RUNNING` *before*
+kernel boot. `GetInstance` returns a lifecycle state, not a `RUNNING` transition
+timestamp; `state_running` is our observation time, not an OCI event timestamp.
+The JSON also records the last non-RUNNING request start and first RUNNING
+response end, without assuming exact control-plane propagation timing.
+
+The kernel logged `Run /init as init process` at 0.872–0.899 s, followed by
+the initramfs systemd banner at 0.878–0.908 s. That is a useful early-userspace
+baseline, **not a measurement of a custom minimal init or application readiness**.
+The origin is Linux's boot clock, not an instrumented first kernel instruction;
+firmware, decompression, early timekeeping, and clock drift are not separately
+resolved. These are fresh, unsuspended guests. Three samples do not establish
+tail latency, and the third launch demonstrates substantial provisioning variance.
+
+Reproduce using the existing network and an ephemeral SSH key in an RWX sandbox:
+
+```sh
+python script/oci_benchmark.py --shape VM.Standard.E6.Ax.Flex \
+  --iterations 3 --ssh-key /tmp/benchmark-key --kernel-report --guest-report \
+  --output kernel-boot-benchmark.json
+```
+
+All three measured instances reached `TERMINATED`, with boot-volume deletion
+requested; the run-scoped sweep found zero leftovers. Raw samples and kernel logs
+are retained in `kernel-boot-benchmark.json` in the
+[measurement thread](https://ampcode.com/threads/T-01a13742-e07b-7161-b8ef-73cdf253b968).
+
 ## Shape and CPU count
 
 OCI bills flexible shapes in **OCPUs**. On x86 shapes such as
