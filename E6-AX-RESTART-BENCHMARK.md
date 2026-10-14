@@ -1,5 +1,51 @@
 # E6 AX start from stopped
 
+## October 14, 2026: second boot after 30 minutes stopped
+
+**Kernel start remained approximately 10 seconds: 9.033–9.315 s after
+`START`, with SSH answering at 16.464 s.** This is one completed trial,
+consistent with the five immediate second boots below, not a tail-latency claim.
+
+The VM used the same E6 AX configuration: 2 OCPUs, 8 GB RAM, 50 GB boot volume,
+Ashburn AD-1, `Oracle-Linux-9.8-2026.09.18-0`. After its first boot and completed
+cloud-init/systemd startup, OCI reported `STOPPED` at
+**2026-10-14 16:33:07.029506 UTC**. The start timer began at
+**17:03:07.584623 UTC**, after **1,800.555 seconds** stopped. Monotonic elapsed
+time and independent UTC timestamp subtraction agreed. Read-only checks during
+the interval and immediately before `START` confirmed the VM remained stopped.
+
+| Phase | Fresh launch | Start after 30 minutes stopped |
+| --- | ---: | ---: |
+| API returned | 1.172 s | 0.494 s |
+| Observed RUNNING | 27.810 s | 4.224 s |
+| Inferred kernel boot-clock origin | 32.100–32.387 s | 9.033–9.315 s |
+| SSH banner | 42.313 s | 16.464 s |
+
+Offsets begin at the respective launch/start request. The kernel logged
+`Run /init as init process` at 0.913 s on second boot, placing the handoff
+approximately 9.95–10.23 s after `START`. This is the stock initramfs, not a
+custom minimal init. Kernel-origin intervals use the same five bracketed uptime
+reads as the earlier measurements; SSH is only the later retrieval channel.
+
+The test ran in separate short `rwx sandbox exec` commands for preparation,
+waiting, and restart, using a temporary driver around the existing benchmark
+helpers. Two earlier single-command attempts ended at RWX's observed 30-minute
+cutoff before completing the stopped interval, including a retry with one-hour
+sandbox timeout settings. Neither produced a restart sample; both were excluded
+and their instances terminated. Short commands during the successful wait kept
+the sandbox session alive without changing the OCI VM.
+
+The completed trial's boot ID changed, cloud-init reported `done`, and systemd
+reported completed startup but `degraded`, as before. The measured VM and both
+interrupted-attempt VMs were independently confirmed `TERMINATED`, with
+boot-volume deletion requested. The reusable network remains.
+
+Measured instance:
+`ocid1.instance.oc1.iad.anuwcljsurwx6aqcnpqjm6bvvvtlpcp65jcvqquxdy6crl4k2xjprykebdha`.
+Raw samples, timestamps, boot IDs, and kernel logs are retained as
+`second-boot-after-30m.json` in the
+[measurement thread](https://ampcode.com/threads/T-01a13742-e07b-7161-b8ef-73cdf253b968).
+
 ## October 13, 2026: five independent second boots
 
 **Second-boot kernel start had a median interval of 9.666–10.011 seconds
